@@ -1,0 +1,9 @@
+/node_modules
+/apps/api/node_modules
+/apps/web/node_modules
+
+/apps/api/.env
+/apps/web/.env
+/apps/web/.env.local
+/apps/web/.env.development.local
+

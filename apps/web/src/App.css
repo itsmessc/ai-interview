@@ -1,0 +1,131 @@
+.landing-wrapper {
+  min-height: 100vh;
+  padding: 48px 24px 96px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.landing-hero {
+  text-align: center;
+  margin-bottom: 48px;
+}
+
+.landing-actions {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 24px;
+}
+
+.landing-grid {
+  margin-top: 12px;
+}
+
+.landing-form {
+  margin-top: 24px;
+}
+
+.interviewee-layout,
+.interviewer-layout {
+  min-height: 100vh;
+  background: linear-gradient(180deg, rgba(241, 245, 249, 0.8) 0%, #ffffff 100%);
+}
+
+.interview-layout-content {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 24px 80px;
+}
+
+.welcome-modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.chat-container {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+}
+
+.chat-panel {
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 20px 45px rgba(15, 23, 42, 0.08);
+}
+
+.chat-timeline {
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
+.timeline-entry {
+  margin-bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.timeline-entry.assistant {
+  align-items: flex-start;
+}
+
+.timeline-entry.candidate {
+  align-items: flex-end;
+}
+
+.candidate-badge {
+  align-self: flex-end;
+}
+
+.question-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  color: #475569;
+}
+
+.dashboard-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 24px 96px;
+}
+
+.dashboard-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.dashboard-grid {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.dashboard-card {
+  border-radius: 16px;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.07);
+}
+
+.dashboard-table-wrapper {
+  background: #fff;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
+}
+
+.interviewer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 24px;
+}
