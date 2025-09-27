@@ -73,7 +73,7 @@ const interviewSessionSchema = new Schema(
         questions: { type: [questionSchema], default: [] },
         answers: { type: [answerSchema], default: [] },
         chatTranscript: { type: [chatSchema], default: [] },
-        currentQuestionIndex: { type: Number, default: 0 },
+        currentQuestionIndex: { type: Number, default: -1 },
         currentQuestionDeadline: { type: Date },
         difficultySequence: { type: [String], default: [] },
         finalScore: Number,

@@ -1,26 +1,76 @@
-import crypto from 'node:crypto'
-
 let genAi
-let generativeModel
+const modelCache = new Map()
 
 const apiKey = process.env.GEMINI_API_KEY
-const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-pro'
+const configuredModel = process.env.GEMINI_MODEL?.trim()
+const DEFAULT_MODEL = 'gemini-2.5-flash'
+const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash']
 
-async function ensureModel() {
+const MODEL_CANDIDATES = Array.from(
+    new Set([
+        configuredModel,
+        DEFAULT_MODEL,
+        ...FALLBACK_MODELS,
+    ].filter(Boolean)),
+)
+
+async function getGenAi() {
     if (!apiKey) {
-        return null
+        throw new Error('GEMINI_API_KEY is not configured')
     }
-
     if (!genAi) {
-        const { GoogleGenerativeAI } = await import('@google/generative-ai')
-        genAi = new GoogleGenerativeAI(apiKey)
+        const { GoogleGenAI } = await import('@google/genai')
+        genAi = new GoogleGenAI({ apiKey })
+    }
+    return genAi
+}
+
+async function getModelByName(name) {
+    const client = await getGenAi()
+
+    if (!modelCache.has(name)) {
+        // The new SDK uses a `models` service with a `generateContent` method.
+        // We will pass the model name directly to the executor.
+        modelCache.set(name, { name })
     }
 
-    if (!generativeModel) {
-        generativeModel = genAi.getGenerativeModel({ model: modelName })
+    return modelCache.get(name)
+}
+
+function isUnsupportedModelError(error) {
+    if (!error) return false
+    // The new SDK might have different error messages/codes.
+    // This is a guess based on common API responses.
+    const message = error.message || ''
+    return error.status === 404 || /not found|not supported|invalid model/i.test(message)
+}
+
+async function withModel(executor) {
+    const errors = []
+    const client = await getGenAi()
+
+    for (const candidate of MODEL_CANDIDATES) {
+        try {
+            // Pass the model name directly to the executor
+            return await executor(client, candidate)
+        } catch (error) {
+            errors.push({ model: candidate, error })
+
+            if (isUnsupportedModelError(error)) {
+                console.warn(
+                    `Gemini model "${candidate}" is unsupported for this endpoint. Attempting fallback...`,
+                )
+                modelCache.delete(candidate)
+                continue
+            }
+
+            throw error
+        }
     }
 
-    return generativeModel
+    const lastError = errors.at(-1)?.error
+    const summary = errors.map((item) => `${item.model}: ${item.error?.message}`).join(' | ')
+    throw new Error(`Unable to use any Gemini model. Attempts: ${summary || 'none'}`, { cause: lastError })
 }
 
 function extractJsonFromResponse(text) {
@@ -35,74 +85,54 @@ function extractJsonFromResponse(text) {
     return text
 }
 
-const fallbackBank = {
-    easy: [
-        'Explain the purpose of React hooks and give one example.',
-        'What is the difference between == and === in JavaScript?',
-        'How does destructuring assignment work in ES6?',
-    ],
-    medium: [
-        'Describe how you would structure state management in a mid-sized React application.',
-        'How do you design a REST API in Node.js that supports pagination and filtering?',
-        'Explain how context and prop drilling differ in React applications.',
-    ],
-    hard: [
-        'Walk through optimizing a React app that suffers from repeated re-renders in a complex component tree.',
-        'Design a scalable architecture for uploading large files in a Node.js/Express backend.',
-        'Explain how you would secure an SSR React application with role-based access control end-to-end.',
-    ],
-}
-
-function fallbackQuestion({ difficulty, seed }) {
-    const bank = fallbackBank[difficulty]
-    const index = seed % bank.length
-    return bank[index]
-}
-
 export async function generateQuestionSet({ plan, candidateProfile }) {
-    const model = await ensureModel()
+    return withModel(async (client, modelName) => {
+        const systemPrompt = `You are an AI interviewer focused on full-stack (React + Node.js). You must return exactly ${plan.length} interview questions as strict JSON with the shape {"questions":[{"difficulty":"easy|medium|hard","question":"text","timeLimitSeconds":60},...]}. Each question should assess practical skills, increasing in difficulty following the provided order. Avoid markdown in the response.`
 
-    if (!model) {
-        const seed = Number.parseInt(crypto.createHash('sha1').update(candidateProfile.email || candidateProfile.name || Date.now().toString()).digest('hex').slice(0, 8), 16)
-        return plan.map((slot, i) => ({
-            question: fallbackQuestion({ difficulty: slot.difficulty, seed: seed + i }),
-            difficulty: slot.difficulty,
-        }))
-    }
+        const difficultyHints = plan
+            .map((slot, index) => `${index + 1}. Difficulty: ${slot.difficulty}`)
+            .join('\n')
 
-    const systemPrompt = `You are an AI interviewer focused on full-stack (React + Node.js). You must return exactly ${plan.length} interview questions as strict JSON with the shape {"questions":[{"difficulty":"easy|medium|hard","question":"text"},...]}. Each question should assess practical skills, increasing in difficulty following the provided order. Avoid markdown in the response.`
+        const candidateContext = [candidateProfile.name, candidateProfile.email, candidateProfile.phone]
+            .filter(Boolean)
+            .join(', ')
 
-    const difficultyHints = plan
-        .map((slot, index) => `${index + 1}. Difficulty: ${slot.difficulty} (time limit ${slot.timeLimitSeconds}s)`)
-        .join('\n')
+        const response = await client.models.generateContent({
+            model: modelName,
+            contents: [
+                {
+                    role: 'user',
+                    parts: [
+                        {
+                            text: `${systemPrompt}\n\nCandidate context: ${candidateContext || 'Unknown candidate'}\nDifficulty plan:\n${difficultyHints}`,
+                        },
+                    ],
+                },
+            ],
+            generationConfig: { responseMimeType: 'application/json' },
+        })
 
-    const candidateContext = [candidateProfile.name, candidateProfile.email, candidateProfile.phone]
-        .filter(Boolean)
-        .join(', ')
+        const text = response.candidates[0].content.parts[0].text
+        const rawJson = extractJsonFromResponse(text)
+        const parsed = JSON.parse(rawJson)
 
-    const { response } = await model.generateContent({
-        contents: [
-            {
-                role: 'user',
-                parts: [
-                    {
-                        text: `${systemPrompt}\n\nCandidate context: ${candidateContext || 'Unknown candidate'}\nDifficulty plan:\n${difficultyHints}`,
-                    },
-                ],
-            },
-        ],
-        generationConfig: { responseMimeType: 'application/json' },
+        const questions = parsed.questions
+        if (!Array.isArray(questions) || questions.length < plan.length) {
+            throw new Error('Gemini response missing required questions array')
+        }
+
+        return plan.map((slot, index) => {
+            const question = questions[index]
+            if (typeof question?.question !== 'string' || !question.question.trim()) {
+                throw new Error(`Gemini response missing question text for index ${index}`)
+            }
+            return {
+                question: question.question,
+                difficulty: slot.difficulty,
+                timeLimitSeconds: question.timeLimitSeconds || 60,
+            }
+        })
     })
-
-    const text = response.text()
-    const rawJson = extractJsonFromResponse(text)
-    const parsed = JSON.parse(rawJson)
-
-    const questions = parsed.questions || []
-    return plan.map((slot, index) => ({
-        question: questions[index]?.question || fallbackQuestion({ difficulty: slot.difficulty, seed: index }),
-        difficulty: slot.difficulty,
-    }))
 }
 
 export async function scoreAnswerWithAi({
@@ -111,82 +141,74 @@ export async function scoreAnswerWithAi({
     difficulty,
     candidateProfile,
 }) {
-    const model = await ensureModel()
+    return withModel(async (client, modelName) => {
+        const response = await client.models.generateContent({
+            model: modelName,
+            contents: [
+                {
+                    role: 'user',
+                    parts: [
+                        {
+                            text: `You are grading a full-stack interview answer. Provide JSON with keys score (0-10 integer) and feedback (short constructive text).\nQuestion (${difficulty}): ${question}\nCandidate: ${JSON.stringify(candidateProfile)}\nAnswer: ${answer || '<<blank>>'}`,
+                        },
+                    ],
+                },
+            ],
+            generationConfig: { responseMimeType: 'application/json' },
+        })
 
-    if (!model) {
-        const sanitized = (answer || '').trim()
-        const lengthScore = Math.min(10, Math.round((sanitized.length / 200) * 10))
-        const completenessBonus = sanitized.includes('React') || sanitized.includes('Node') ? 1 : 0
-        const score = Math.min(10, Math.max(2, lengthScore + completenessBonus))
-        return {
-            score,
-            feedback: sanitized
-                ? `Fallback scoring: answer length implies score ${score}/10.`
-                : 'Fallback scoring: no answer provided, score 2/10.',
+        const text = response.candidates[0].content.parts[0].text
+        const parsed = JSON.parse(extractJsonFromResponse(text))
+
+        if (parsed == null || parsed.score === undefined) {
+            throw new Error('Gemini response missing score field')
         }
-    }
 
-    const { response } = await model.generateContent({
-        contents: [
-            {
-                role: 'user',
-                parts: [
-                    {
-                        text: `You are grading a full-stack interview answer. Provide JSON with keys score (0-10 integer) and feedback (short constructive text).\nQuestion (${difficulty}): ${question}\nCandidate: ${JSON.stringify(candidateProfile)}\nAnswer: ${answer || '<<blank>>'}`,
-                    },
-                ],
-            },
-        ],
-        generationConfig: { responseMimeType: 'application/json' },
+        const numericScore = Number.parseFloat(parsed.score)
+        const safeScore = Number.isFinite(numericScore) ? Math.max(0, Math.min(10, numericScore)) : 0
+
+        return {
+            score: safeScore,
+            feedback: parsed.feedback || 'Score generated by AI.',
+        }
     })
-
-    const text = response.text()
-    const parsed = JSON.parse(extractJsonFromResponse(text))
-
-    const numericScore = Number.parseFloat(parsed.score)
-    const safeScore = Number.isFinite(numericScore) ? Math.max(0, Math.min(10, numericScore)) : 0
-
-    return {
-        score: safeScore,
-        feedback: parsed.feedback || 'Score generated by AI.',
-    }
 }
 
 export async function summarizeWithAi({ candidate, questions, answers, averageScore }) {
-    const model = await ensureModel()
+    return withModel(async (client, modelName) => {
+        const qaPairs = questions.map((question, index) => ({
+            question: question.prompt || question.question,
+            difficulty: question.difficulty,
+            answer: answers[index]?.candidateAnswer || '',
+            score: answers[index]?.aiScore ?? null,
+            feedback: answers[index]?.aiFeedback || '',
+        }))
 
-    if (!model) {
-        return {
-            summary: `Candidate ${candidate.name || candidate.email || 'Unknown'} completed the interview with an average score of ${averageScore.toFixed(1)}. Fallback summary available only in development mode.`,
+        const response = await client.models.generateContent({
+            model: modelName,
+            contents: [
+                {
+                    role: 'user',
+                    parts: [
+                        {
+                            text: `Provide a concise (<= 120 words) JSON summary with keys summary (string) and recommendation (string). Do not include markdown.\nCandidate: ${JSON.stringify(candidate)}\nAverage score: ${averageScore.toFixed(2)}\nQA pairs: ${JSON.stringify(qaPairs)}`,
+                        },
+                    ],
+                },
+            ],
+            generationConfig: { responseMimeType: 'application/json' },
+        })
+
+        const text = response.candidates[0].content.parts[0].text
+        const parsed = JSON.parse(extractJsonFromResponse(text))
+
+        if (!parsed || typeof parsed.summary !== 'string') {
+            throw new Error('Gemini response missing summary')
         }
-    }
 
-    const qaPairs = questions.map((question, index) => ({
-        question: question.prompt || question.question,
-        difficulty: question.difficulty,
-        answer: answers[index]?.candidateAnswer || '',
-        score: answers[index]?.aiScore ?? null,
-        feedback: answers[index]?.aiFeedback || '',
-    }))
-
-    const { response } = await model.generateContent({
-        contents: [
-            {
-                role: 'user',
-                parts: [
-                    {
-                        text: `Provide a concise (<= 120 words) JSON summary with keys summary (string) and recommendation (string). Do not include markdown.\nCandidate: ${JSON.stringify(candidate)}\nAverage score: ${averageScore.toFixed(2)}\nQA pairs: ${JSON.stringify(qaPairs)}`,
-                    },
-                ],
-            },
-        ],
-        generationConfig: { responseMimeType: 'application/json' },
+        return {
+            summary: parsed.summary,
+            recommendation: typeof parsed.recommendation === 'string' ? parsed.recommendation : '',
+        }
     })
-
-    const parsed = JSON.parse(extractJsonFromResponse(response.text()))
-
-    return {
-        summary: parsed.summary || 'Summary not available.',
-        recommendation: parsed.recommendation || '',
-    }
 }

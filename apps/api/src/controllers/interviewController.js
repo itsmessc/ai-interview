@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { InterviewSession } from '../models/InterviewSession.js'
 import { buildInviteUrl } from '../utils/url.js'
 import { QUESTION_PLAN, serializeSession } from '../services/interviewEngine.js'
+import { sendInviteEmail } from '../services/mailer.js'
 
 const createInterviewSchema = z.object({
     candidateName: z.string().min(2).max(100).optional(),
@@ -65,9 +66,32 @@ export async function createInterview(req, res) {
         notes: payload.notes,
     })
 
+    const inviteUrl = buildInviteUrl(inviteToken)
+
+    let emailResult = null
+    if (payload.candidateEmail) {
+        try {
+            emailResult = await sendInviteEmail({
+                to: payload.candidateEmail,
+                candidateName: payload.candidateName,
+                interviewerName: req.interviewer?.name,
+                inviteUrl,
+            })
+        } catch (error) {
+            console.error('Failed to send invite email', error)
+            emailResult = {
+                sent: false,
+                skipped: false,
+                error: error.message,
+                code: error.code || error.responseCode,
+            }
+        }
+    }
+
     res.status(201).json({
         session: serializeSession(session),
-        inviteUrl: buildInviteUrl(inviteToken),
+        inviteUrl,
+        email: emailResult,
     })
 }
 

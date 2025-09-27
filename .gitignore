@@ -7,3 +7,4 @@
 /apps/web/.env.local
 /apps/web/.env.development.local
 
+/apps/api/uploads

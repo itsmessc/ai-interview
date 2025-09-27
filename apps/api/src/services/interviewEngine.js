@@ -35,12 +35,11 @@ export async function prepareQuestionsForSession(session) {
         id: uuidv4(),
         prompt: item.question,
         difficulty: item.difficulty,
-        timeLimitSeconds:
-            QUESTION_PLAN.find((planItem) => planItem.difficulty === item.difficulty)?.timeLimitSeconds || 60,
+        timeLimitSeconds: item.timeLimitSeconds,
     }))
     session.difficultySequence = QUESTION_PLAN.map((item) => item.difficulty)
-    session.currentQuestionIndex = 0
-    session.currentQuestionDeadline = getNextQuestionDeadline(session.questions[0].timeLimitSeconds)
+    session.currentQuestionIndex = -1
+    session.currentQuestionDeadline = null
     session.startedAt = new Date()
 
     return session.questions

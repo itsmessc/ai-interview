@@ -174,13 +174,19 @@ export async function startInterview(req, res) {
     })
 
     await session.save()
-    broadcastSession(session)
 
-    const currentQuestion = session.questions[session.currentQuestionIndex]
+    const { isComplete, nextQuestion } = await evaluateAnswer(session, { answer: '', durationMs: 0 })
+
+    if (isComplete) {
+        await finalizeSession(session)
+    }
+
+    await session.save()
+    broadcastSession(session)
 
     res.json({
         session: serializeSession(session),
-        currentQuestion,
+        currentQuestion: nextQuestion,
         deadline: session.currentQuestionDeadline,
         plan: QUESTION_PLAN,
     })

@@ -79,6 +79,13 @@ function IntervieweeRouter() {
         },
     })
 
+    const querySession = inviteQuery.data?.session || null
+    const queryPlan = inviteQuery.data?.plan || null
+
+    const resolvedSession = session || querySession
+    const resolvedPlan = storedState?.plan || queryPlan
+    const resolvedDeadline = storedState?.deadline || querySession?.currentQuestionDeadline || null
+
     useEffect(() => {
         if (!session) return
         if (session.status === 'in-progress' && !storedState?.welcomeBackSeen) {
@@ -105,15 +112,15 @@ function IntervieweeRouter() {
     })
 
     const content = useMemo(() => {
-        if (inviteQuery.isLoading && !session) {
-            return (
-                <InterviewLayout>
-                    <Spin indicator={<LoadingOutlined style={{ fontSize: 48 }} spin />} />
-                </InterviewLayout>
-            )
-        }
+        if (!resolvedSession) {
+            if (inviteQuery.isLoading || inviteQuery.isFetching) {
+                return (
+                    <InterviewLayout>
+                        <Spin indicator={<LoadingOutlined style={{ fontSize: 48 }} spin />} />
+                    </InterviewLayout>
+                )
+            }
 
-        if (!session) {
             if (inviteQuery.isError) {
                 return (
                     <InterviewLayout>
@@ -125,10 +132,27 @@ function IntervieweeRouter() {
                     </InterviewLayout>
                 )
             }
-            return null
+
+            if (inviteQuery.isSuccess) {
+                return (
+                    <InterviewLayout>
+                        <Result
+                            status="info"
+                            title="Preparing your interview..."
+                            subTitle="Hang tight—this can take a couple of seconds on the first load."
+                        />
+                    </InterviewLayout>
+                )
+            }
+
+            return (
+                <InterviewLayout>
+                    <Result status="info" title="Loading interview details" />
+                </InterviewLayout>
+            )
         }
 
-        if (session.status === 'expired') {
+        if (resolvedSession.status === 'expired') {
             return (
                 <InterviewLayout>
                     <Result status="warning" title="This interview link has expired." />
@@ -136,20 +160,20 @@ function IntervieweeRouter() {
             )
         }
 
-        if (session.status === 'completed') {
+        if (resolvedSession.status === 'completed') {
             return (
                 <InterviewLayout>
-                    <InterviewSummary token={token} session={session} plan={storedState?.plan} />
+                    <InterviewSummary token={token} session={resolvedSession} plan={resolvedPlan} />
                 </InterviewLayout>
             )
         }
 
-        const missing = session.missingFields || []
+        const missing = resolvedSession.missingFields || []
 
         if (missing.includes('resume')) {
             return (
                 <InterviewLayout>
-                    <ResumeUploader token={token} session={session} />
+                    <ResumeUploader token={token} session={resolvedSession} />
                 </InterviewLayout>
             )
         }
@@ -157,7 +181,7 @@ function IntervieweeRouter() {
         if (missing.some((field) => field !== 'resume')) {
             return (
                 <InterviewLayout>
-                    <ProfileForm token={token} session={session} />
+                    <ProfileForm token={token} session={resolvedSession} />
                 </InterviewLayout>
             )
         }
@@ -166,14 +190,14 @@ function IntervieweeRouter() {
             <InterviewLayout>
                 <InterviewChat
                     token={token}
-                    session={session}
-                    plan={storedState?.plan}
+                    session={resolvedSession}
+                    plan={resolvedPlan}
                     startInterview={startMutation}
-                    countdownDeadline={storedState?.deadline || session.currentQuestionDeadline}
+                    countdownDeadline={resolvedDeadline || resolvedSession.currentQuestionDeadline}
                 />
             </InterviewLayout>
         )
-    }, [inviteQuery, session, storedState, token, startMutation])
+    }, [inviteQuery, resolvedSession, resolvedPlan, resolvedDeadline, token, startMutation])
 
     return (
         <>

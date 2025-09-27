@@ -42,7 +42,7 @@ function InterviewChat({ token, session, plan, startInterview, countdownDeadline
     const timelineRef = useRef(null)
 
     const currentQuestion = session.questions?.[session.currentQuestionIndex] || null
-    const answeredCount = session.currentQuestionIndex
+    const answeredCount = session.currentQuestionIndex < 0 ? 0 : session.currentQuestionIndex
     const totalQuestions = plan?.length || session.questions?.length || 6
 
     useEffect(() => {

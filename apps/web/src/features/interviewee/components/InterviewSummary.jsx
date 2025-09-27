@@ -3,7 +3,6 @@ import { Button, Card, Col, Descriptions, Result, Row, Space, Tag, Typography } 
 import dayjs from 'dayjs'
 import PropTypes from 'prop-types'
 import { useMemo } from 'react'
-import { Link } from 'react-router-dom'
 
 const { Title, Paragraph, Text } = Typography
 
@@ -86,9 +85,9 @@ function InterviewSummary({ session, plan }) {
                 <Paragraph>
                     <FileTextOutlined style={{ marginRight: 8 }} /> Save this page or take a screenshot to preserve your results. You can safely close the tab.
                 </Paragraph>
-                <Button type="link">
-                    <Link to="/">Schedule another interview</Link>
-                </Button>
+                <Paragraph type="secondary">
+                    If you have questions about the next steps, reach out to your recruiter for guidance.
+                </Paragraph>
             </Card>
         </Space>
     )

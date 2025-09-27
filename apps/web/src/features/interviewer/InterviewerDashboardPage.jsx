@@ -1,5 +1,6 @@
-import { LogoutOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { DownloadOutlined, LogoutOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
+    Alert,
     Badge,
     Button,
     Card,
@@ -23,7 +24,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { io } from 'socket.io-client'
 import { apiClient } from '../../lib/apiClient.js'
-import { SOCKET_URL } from '../../lib/config.js'
+import { API_BASE_URL, SOCKET_URL } from '../../lib/config.js'
 import { clearCredentials } from '../auth/authSlice.js'
 
 const { Title, Paragraph, Text } = Typography
@@ -67,6 +68,9 @@ function InterviewerDashboardPage() {
 
     const { data: detailData, isLoading: detailLoading } = useInterviewDetail(selectedSessionId)
     const sessionDetail = detailData?.session
+    const uploadsBaseUrl = API_BASE_URL.replace(/\/api$/, '')
+    const resumeDetails = sessionDetail?.candidate?.resume
+    const resumeUrl = resumeDetails?.storedName ? `${uploadsBaseUrl}/uploads/${resumeDetails.storedName}` : null
 
     useEffect(() => {
         if (!selectedSessionId) return undefined
@@ -113,10 +117,22 @@ function InterviewerDashboardPage() {
         mutationFn: (values) => apiClient.post('/interviews', values).then((res) => res.data),
         onSuccess: (response) => {
             setIsCreateModalOpen(false)
-            message.success('Invite created')
+            const emailStatus = response.email
+
+            if (emailStatus?.sent) {
+                message.success('Invite created and email sent to the candidate')
+            } else if (emailStatus?.skipped) {
+                message.success('Invite created. Email not configured, copy the link below to share')
+            } else if (emailStatus) {
+                const reason = emailStatus.error ? ` (${emailStatus.error})` : ''
+                message.warning(`Invite created, but sending the email failed${reason}. Copy the link below to share manually.`)
+            } else {
+                message.success('Invite created')
+            }
             setInviteModal({
                 inviteUrl: response.inviteUrl,
                 session: response.session,
+                emailStatus,
             })
             queryClient.invalidateQueries({ queryKey: ['interviews'] })
         },
@@ -125,6 +141,45 @@ function InterviewerDashboardPage() {
             message.error(msg)
         },
     })
+
+    const inviteModalAlert = useMemo(() => {
+        if (!inviteModal) return null
+
+        const status = inviteModal.emailStatus
+
+        if (!status) {
+            return {
+                type: 'info',
+                title: 'Invite created',
+                description: 'Share the secure link below with your candidate.',
+            }
+        }
+
+        if (status.sent) {
+            return {
+                type: 'success',
+                title: 'Email sent to the candidate',
+                description: 'We also generated the invitation link in case you want to share it directly.',
+            }
+        }
+
+        if (status.skipped) {
+            return {
+                type: 'warning',
+                title: 'Email skipped (SMTP isn\'t configured)',
+                description: 'Copy the link below and send it to the candidate manually.',
+            }
+        }
+
+        const baseDescription = 'Share the link manually while we investigate the issue.'
+        const errorSuffix = status.error ? ` Reason: ${status.error}${status.code ? ` (code: ${status.code})` : ''}.` : ''
+
+        return {
+            type: 'error',
+            title: 'Email failed to send',
+            description: `${baseDescription}${errorSuffix}`,
+        }
+    }, [inviteModal])
 
     const handleLogout = () => {
         dispatch(clearCredentials())
@@ -292,9 +347,15 @@ function InterviewerDashboardPage() {
                 onOk={() => setInviteModal(null)}
                 centered
             >
-                <Paragraph>
-                    Share this secure link with your candidate to start the interview.
-                </Paragraph>
+                {inviteModalAlert && (
+                    <Alert
+                        type={inviteModalAlert.type}
+                        showIcon
+                        message={inviteModalAlert.title}
+                        description={inviteModalAlert.description}
+                        style={{ marginBottom: 16 }}
+                    />
+                )}
                 <Card size="small" style={{ background: '#f8fafc' }}>
                     <Text copyable>{inviteModal?.inviteUrl}</Text>
                 </Card>
@@ -313,6 +374,22 @@ function InterviewerDashboardPage() {
                         <Descriptions column={1} bordered size="small">
                             <Descriptions.Item label="Email">{sessionDetail.candidate?.email || '—'}</Descriptions.Item>
                             <Descriptions.Item label="Phone">{sessionDetail.candidate?.phone || '—'}</Descriptions.Item>
+                            <Descriptions.Item label="Resume">
+                                {resumeUrl ? (
+                                    <Button
+                                        type="link"
+                                        icon={<DownloadOutlined />}
+                                        href={resumeUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        style={{ padding: 0 }}
+                                    >
+                                        {resumeDetails?.originalName || 'Download resume'}
+                                    </Button>
+                                ) : (
+                                    'Not uploaded yet'
+                                )}
+                            </Descriptions.Item>
                             <Descriptions.Item label="Status">{sessionDetail.status}</Descriptions.Item>
                             <Descriptions.Item label="Final score">
                                 {sessionDetail.finalScore ? `${sessionDetail.finalScore}/10` : 'Pending'}
