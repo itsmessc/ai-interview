@@ -105,3 +105,17 @@ Currently unlicensed (all rights reserved).
 
 Document status: UPDATED 2025-09-28.
 
+## Frontend Environment Variables (apps/web/.env)
+| Var | Required | Notes |
+|-----|----------|-------|
+| VITE_API_URL | yes | Base API URL including /api (e.g. https://api.domain.com/api) |
+| VITE_SOCKET_URL | no | Socket origin; if omitted derived from VITE_API_URL by stripping /api |
+| VITE_APP_TITLE | no | Overrides UI/title branding (default: AI Interview Assistant) |
+
+Example `.env.local`:
+```
+VITE_API_URL=http://localhost:3000/api
+# VITE_SOCKET_URL=http://localhost:3000
+VITE_APP_TITLE=AI Interview Assistant (Dev)
+```
+
