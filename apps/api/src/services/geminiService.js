@@ -87,7 +87,7 @@ function extractJsonFromResponse(text) {
 
 export async function generateQuestionSet({ plan, candidateProfile }) {
     return withModel(async (client, modelName) => {
-        const systemPrompt = `You are an AI interviewer focused on full-stack (React + Node.js). You must return exactly ${plan.length} interview questions as strict JSON with the shape {"questions":[{"difficulty":"easy|medium|hard","question":"text","timeLimitSeconds":60},...]}. Each question should assess practical skills, increasing in difficulty following the provided order. Avoid markdown in the response.`
+        const systemPrompt = `You are an AI interviewer for full-stack (React + Node.js). Return EXACT JSON: {"questions":[{"difficulty":"easy|medium|hard","question":"text","timeLimitSeconds":number},...]}. Choose timeLimitSeconds based on difficulty & expected reasoning depth: easy 20-45s, medium 45-90s, hard 90-150s. Do not exceed 180 seconds. No markdown.`
 
         const difficultyHints = plan
             .map((slot, index) => `${index + 1}. Difficulty: ${slot.difficulty}`)
@@ -126,10 +126,22 @@ export async function generateQuestionSet({ plan, candidateProfile }) {
             if (typeof question?.question !== 'string' || !question.question.trim()) {
                 throw new Error(`Gemini response missing question text for index ${index}`)
             }
+            // Dynamic timer normalization
+            let proposed = Number(question.timeLimitSeconds)
+            if (!Number.isFinite(proposed)) proposed = NaN
+            const bounds = {
+                easy: { min: 20, max: 60, fallback: 30 },
+                medium: { min: 45, max: 100, fallback: 60 },
+                hard: { min: 90, max: 180, fallback: 120 },
+            }
+            const { min, max, fallback } = bounds[slot.difficulty] || { min: 30, max: 120, fallback: 60 }
+            if (!(proposed >= min && proposed <= max)) {
+                proposed = fallback
+            }
             return {
                 question: question.question,
                 difficulty: slot.difficulty,
-                timeLimitSeconds: question.timeLimitSeconds || 60,
+                timeLimitSeconds: proposed,
             }
         })
     })

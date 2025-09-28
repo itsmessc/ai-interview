@@ -165,7 +165,19 @@ export async function startInterview(req, res) {
         })
     }
 
+    // Prepare question set if not already generated
     await prepareQuestionsForSession(session)
+
+    // If interview already in progress just return current state
+    if (session.status === 'in-progress') {
+        return res.json({
+            session: serializeSession(session),
+            currentQuestion: session.questions[session.currentQuestionIndex] || null,
+            deadline: session.currentQuestionDeadline,
+            plan: QUESTION_PLAN,
+        })
+    }
+
     session.status = 'in-progress'
     session.chatTranscript.push({
         role: 'system',
@@ -173,20 +185,19 @@ export async function startInterview(req, res) {
         createdAt: new Date(),
     })
 
-    await session.save()
-
-    const { isComplete, nextQuestion } = await evaluateAnswer(session, { answer: '', durationMs: 0 })
-
-    if (isComplete) {
-        await finalizeSession(session)
-    }
+    // Move to first question (index 0) and assign deadline
+    session.currentQuestionIndex = 0
+    const firstQuestion = session.questions[0]
+    session.currentQuestionDeadline = firstQuestion
+        ? new Date(Date.now() + firstQuestion.timeLimitSeconds * 1000)
+        : null
 
     await session.save()
     broadcastSession(session)
 
     res.json({
         session: serializeSession(session),
-        currentQuestion: nextQuestion,
+        currentQuestion: firstQuestion || null,
         deadline: session.currentQuestionDeadline,
         plan: QUESTION_PLAN,
     })

@@ -93,6 +93,13 @@ export async function evaluateAnswer(session, { answer, durationMs }) {
     if (session.currentQuestionIndex < session.questions.length) {
         const nextQuestion = session.questions[session.currentQuestionIndex]
         session.currentQuestionDeadline = getNextQuestionDeadline(nextQuestion.timeLimitSeconds)
+        // Push next question into transcript for interviewer visibility
+        session.chatTranscript.push({
+            role: 'assistant',
+            content: `Question ${session.currentQuestionIndex + 1}: ${nextQuestion.prompt}`,
+            createdAt: new Date(),
+            metadata: { questionId: nextQuestion.id, difficulty: nextQuestion.difficulty, timeLimitSeconds: nextQuestion.timeLimitSeconds },
+        })
     } else {
         session.currentQuestionDeadline = null
     }
