@@ -1,85 +1,207 @@
-# AI Interview Assistant Architecture
+# AI Interview Assistant – Architecture
 
-## 1. Topology Overview
-- **Monorepo** managed with npm workspaces. The root `package.json` wires shared scripts while `apps/web` hosts the Vite/React client and `apps/api` exposes REST + realtime services.
-- **Dual user experiences** share the same interview session model:
-  - **Interviewee portal** (`/invite/:token`) walks a candidate through resume upload, profile verification, timed questions, and the AI-generated summary.
-  - **Interviewer dashboard** (`/interviewer/**`) is a JWT-protected workspace for generating invites, tracking live sessions, and reviewing transcripts.
-- **AI assistance** is powered by Google Gemini via a dedicated backend service that generates question sets, scores answers, and drafts final summaries.
-- **MongoDB** is the system of record for candidates, interview sessions, transcripts, and invite metadata. Client-side state is mirrored via `redux-persist` so an interview can survive refreshes without losing timers.
+This document captures the current (living) architecture of the AI Interview Assistant monorepo. It is intentionally practical: focused on the real code paths, operational considerations, and points of safe extension.
 
-## 2. End-to-End Flow
-1. **Authenticate interviewer**
-   - `/interviewer/login` posts to `POST /api/auth/login`.
-   - On success a JWT is persisted (via `redux-persist` + `localStorage`) and injected into Axios headers for subsequent API calls.
-2. **Create invite**
-   - Dashboard action calls `POST /api/interviews`. The API mints an invite token, stores it on an `InterviewSession`, and (optionally) triggers email via `mailer.js`.
-   - The response includes a shareable URL (`/invite/:token`).
-3. **Candidate bootstrap**
-   - Visiting the link hits `GET /api/invite/:token`. The API returns session metadata, any missing profile fields, and the current countdown deadline if the interview is in progress.
-4. **Resume intake & profile completion**
-   - `POST /api/invite/:token/resume` uploads PDF/DOCX using Multer. `resumeParser.js` extracts candidate name/email/phone, saves the file under `apps/api/uploads/`, and updates the session.
-   - Remaining gaps are collected through `POST /api/invite/:token/profile` before questions begin.
-5. **Timed interview**
-   - `POST /api/invite/:token/start` delegates to `interviewEngine.prepareQuestionsForSession`, generating a six-question plan (2 easy @ 20 s, 2 medium @ 60 s, 2 hard @ 120 s).
-   - For each answer the client calls `POST /api/invite/:token/answers`. `interviewEngine.evaluateAnswer` records the response, requests Gemini scoring, appends assistant feedback to the transcript, advances timers, and emits `session:update` over Socket.IO.
-   - If the local countdown reaches zero, the UI auto-submits the (possibly empty) answer so the backend remains authoritative.
-6. **Completion**
-   - After the final question the API aggregates scores, calls `summarizeWithAi`, persists the final verdict, and returns it to both participants.
-   - `/api/invite/:token/complete` is available for explicit completion hooks, but normal flow concludes automatically once all questions are answered.
-7. **Session resiliency**
-   - The interviewee client persists state per-token inside IndexedDB (via `localforage`). Reloading rehydrates the session, deadlines, and extracted resume fields. A welcome-back modal confirms timers resume only when the candidate is ready.
+---
 
-## 3. Frontend (`apps/web`)
-- **Runtime**: React 19 + Vite 7 with the `@tailwindcss/vite` plugin. Styling combines Tailwind CSS v4 utility classes for layout/spacing and Ant Design 5 components for complex widgets.
-- **State management**:
-  - `auth` slice (`features/auth/authSlice.js`): interviewer credentials + JWT. Persisted to `localStorage` and mirrored into Axios headers.
-  - `interview` slice (`features/interviewee/interviewSlice.js`): keyed by invite token, tracks session payload, plan, countdown deadline, extracted resume fields, and welcome-back flags. Persisted to IndexedDB via `localforage`.
-- **Data fetching**: `@tanstack/react-query` powers API caching, background refetch, and optimistic UI for invite creation and answer submission.
-- **Realtime updates**: `socket.io-client` joins `session:{id}` rooms so interviewer dashboards receive progress in near-real time.
-- **Routing** (React Router v7):
-  - `/` — landing page with invite lookup and CTAs.
-  - `/invite/:token/*` — nested router for resume upload, profile form, chat, and summary.
-  - `/interviewer/login` & `/interviewer/dashboard` — protected routes guarded by `<RequireAuth>`.
-- **Styling conventions**: Tailwind drives layout (gradients, spacing, responsive grids) while Ant Design theming is applied via a central `ConfigProvider`. No legacy `.css` modules remain; global base styles live in `src/index.css` alongside the Tailwind import.
+## 1. High‑Level Topology
 
-## 4. Backend (`apps/api`)
-- **Express stack**: `src/app.js` wires middleware (CORS, body parsing, logging) and static hosting for uploaded resumes. Routers live under `src/routes`.
-- **Data models** (`src/models`):
-  - `Interviewer` (also exported as `User` for legacy imports) — interviewer accounts with bcrypt-hashed passwords.
-  - `InterviewSession` — embeds candidate contact data + resume metadata, invite token, lifecycle status (`created`, `waiting-profile`, `ready`, `in-progress`, `completed`, `expired`), question plan, answers, AI feedback, and chat transcript.
-- **Controllers** orchestrate domain logic:
-  - `authController` — login, seeding checks.
-  - `interviewController` — list/create/fetch interviews for dashboard queries (protected by `authenticate` middleware).
-  - `inviteController` — candidate-facing lifecycle (bootstrap, resume upload, profile update, start, answer submission, completion).
-- **Services** (`src/services`):
-  - `resumeParser.js` — Multer integration, PDF/DOCX parsing via `pdf-parse` and `mammoth`, plus heuristics to pull name/email/phone.
-  - `geminiService.js` — thin wrapper around `@google/generative-ai` with prompt templates for question generation, answer scoring, and final summary recommendations.
-  - `interviewEngine.js` — central session state machine (question scheduling, deadline management, scoring aggregation, summarisation, Socket.IO emission).
-  - `mailer.js` — optional email dispatch (currently a stub/no-op unless SMTP is configured).
-- **Realtime layer**: `src/realtime.js` spins up Socket.IO alongside the HTTP server. Clients join `session:{id}` rooms, and `emitSessionUpdate` pushes incremental state after each mutation.
-- **REST surface** (selected routes):
-  - `POST /api/auth/login`
-  - `GET /api/interviews`, `POST /api/interviews`, `GET /api/interviews/:id`
-  - `GET /api/invite/:token`
-  - `POST /api/invite/:token/{resume|profile|start|answers|complete}`
-  - `GET /api/health`
-- **Security**: Invite tokens are signed JWTs with short TTL and status checks. Authenticated routes require the `Authorization: Bearer` header, enforced by `middleware/authenticate.js`. CORS origins derive from `CLIENT_URL` env (comma-separated list).
+```
+┌─────────────────────────── Monorepo (npm workspaces) ───────────────────────────┐
+│                                                                                │
+│  apps/web  (React 19 + Vite + Ant Design + Tailwind)                           │
+│    ├─ Auth (JWT for interviewer)                                               │
+│    ├─ Interviewee flow (resume → profile → timed Q&A → summary)                │
+│    ├─ Interviewer dashboard (invites, monitoring, transcripts)                 │
+│    └─ State: Redux Toolkit + redux‑persist + react-query + socket.io-client    │
+│                                                                                │
+│  apps/api  (Express 5 + Mongoose + Socket.IO + Gemini API)                     │
+│    ├─ Routes: /api/auth, /api/interviews, /api/invite, /api/health             │
+│    ├─ Services: geminiService, interviewEngine, resumeParser, mailer           │
+│    ├─ Models: Interviewer, InterviewSession                                   │
+│    └─ Realtime: session:{id} rooms (progress + scoring updates)                │
+│                                                                                │
+│  MongoDB (docker-compose)                                                      │
+│  Uploaded resumes (apps/api/uploads, served statically)                        │
+└────────────────────────────────────────────────────────────────────────────────┘
+```
 
-## 5. Data Persistence & Synchronisation
-- **Client**: `redux-persist` + `localforage` store interview sessions per token. Upon reload the UI rehydrates timers using the server-provided deadline and suppresses auto-submission until the candidate resumes.
-- **Server**: MongoDB (via Mongoose) persists the source of truth. Every write to an interview session optionally broadcasts over Socket.IO so dashboards remain in sync without polling.
+Two distinct personas share a single session domain model:
+- Interviewee (unauthenticated, link + token)
+- Interviewer (JWT-authenticated dashboard)
 
-## 6. Timer & Auto-Submit Mechanics
-- When a question starts, the backend stamps `currentQuestionDeadline` and returns it. The client keeps the timestamp (not a running counter) and recomputes the remaining seconds each render.
-- If the deadline passes locally, the UI auto-submits an empty answer to avoid drift. The backend still validates ordering and records the actual elapsed duration for AI scoring context.
+AI capabilities (question generation, answer scoring, summarisation) are implemented as pure functions wrapping Google Gemini models; the rest of the system treats them as deterministic services with controlled prompts and JSON outputs.
 
-## 7. Deployment & Local Development
-- **Local**: `docker-compose.yml` provides MongoDB. Run `npm install` once at the repo root, then `npm run dev` (monorepo script) to start API + web concurrently. API expects `.env` with `DATABASE_URL`, `JWT_SECRET`, `GEMINI_API_KEY`, `CLIENT_URL`, and optional `SMTP_*` vars.
-- **Production**: Common setup is API on Render/Railway/Fly.io and the Vite build on Netlify/Vercel. Remember to expose `/uploads` for resume downloads, configure HTTPS/CORS, and provide the same environment variables.
+---
 
-## 8. Forward-Looking Enhancements
-- Harden the mailer with a real provider (SendGrid/Postmark) and template management.
-- Allow interviewers to customise question plans or upload their own banks.
-- Add analytics (conversion funnel, average score trends, AI feedback quality) to the dashboard.
-- Explore transcript export to PDF/CSV for downstream ATS workflows.
+## 2. Core Domain Objects
+
+### Interviewer
+Attributes: name, email (unique), passwordHash, timestamps.
+Usage: Authentication context for dashboard + ownership of interview sessions.
+
+### InterviewSession
+Key fields:
+- inviteToken (unguessable UUID v4 – acts as public join secret)
+- status: created → waiting-profile → ready → in-progress → completed (→ expired planned)
+- candidate { name, email, phone, resume {storedName,…} }
+- questions[] (generated once, immutable afterwards)
+- answers[] (one per question; AI scored)
+- chatTranscript[] (system, assistant, candidate events)
+- currentQuestionIndex & currentQuestionDeadline (server-authoritative timer)
+- finalScore / finalSummary
+
+### Question / Answer semantics
+- Question difficulty drives default timing + scoring expectations.
+- Answer includes AI feedback & score; updating an answer overwrites prior attempt (idempotent per question).
+
+---
+
+## 3. Request + Realtime Lifecycle
+
+1. Interviewer logs in (POST /api/auth/login) → JWT issued (7d expiry) → stored client-side → attached to axios Authorization header.
+2. Create interview (POST /api/interviews) → InterviewSession persisted (status waiting-profile) → optional email dispatch → invite URL returned.
+3. Candidate loads invite (GET /api/invite/:token) → bootstrap session + missingFields + plan skeleton (difficulty/time blueprint).
+4. Candidate uploads resume (POST /api/invite/:token/resume) → server parses PDF/DOCX → updates candidate fields → may progress status.
+5. Candidate fills missing profile fields (POST /api/invite/:token/profile) → when all REQUIRED_FIELDS satisfied → status ready.
+6. Start interview (POST /api/invite/:token/start) → question set generated (if first start) → first deadline computed → transcript seeded.
+7. Submit answer (POST /api/invite/:token/answers) → AI scoring + feedback → transcript & answers updated → next question index/deadline advanced (or finalize if last).
+8. Completion triggers summarisation (Gemini) → finalScore + finalSummary persisted → Socket.IO broadcast to interviewer dashboard.
+
+Realtime: interviewer dashboard joins session:{id}; each mutation triggers emitSessionUpdate(session:update) so UI views update without manual polling. (The invite side still uses light polling for resilience; can be future-optimised to also use sockets.)
+
+---
+
+## 4. Frontend (apps/web)
+
+Stack: React 19, Vite 7, Ant Design 5, Tailwind CSS 4 (via @tailwindcss/vite), Redux Toolkit, redux-persist, react-query, socket.io-client.
+
+State slices:
+- auth: { token, interviewer } (persisted to localStorage)
+- interview: per-token map { session, plan, deadline, extractedFields, welcomeBackSeen, lastVisitedAt }
+
+Data layer patterns:
+- react-query handles caching, revalidation, incremental updates
+- axios instance auto-injects Authorization header (store subscription in store.js)
+- socket.io used only on interviewer side for now; candidate view relies on API responses + local timers
+
+Routing (React Router v7):
+- / (landing) – currently static/minimal
+- /invite/:token – orchestrates step logic (ResumeUploader → ProfileForm → InterviewChat → InterviewSummary)
+- /interviewer/login – auth form
+- /interviewer/dashboard – protected via <RequireAuth>
+
+Timer UX: deadline timestamp kept; component derives remaining ms every 250ms; auto-submission when 0 triggers answer mutation if not yet sent.
+
+---
+
+## 5. Backend (apps/api)
+
+Stack: Express 5, Mongoose 8, Socket.IO 4, JSON Web Tokens, Multer, pdf-parse, mammoth.
+
+Key modules:
+- app.js – middleware (CORS from CLIENT_URL, JSON parsing, logging, static /uploads)
+- realtime.js – Socket.IO server + helpers
+- controllers/*.js – route-level orchestration (validation via Zod)
+- services/geminiService.js – safe model fallback, JSON extraction, prompt templates
+- services/interviewEngine.js – question plan constants, state machine transitions, scoring & summarisation delegates
+- services/resumeParser.js – heuristic extraction of name/email/phone
+- services/mailer.js – optional; gracefully no-ops if SMTP not configured
+
+Validation & Errors: All input validated with Zod; central error handler normalises 400 (validation), 401 (auth), 404, 500 responses; includes stack in non-production.
+
+---
+
+## 6. Data Persistence & Caching
+
+Server of record: MongoDB (single replica – local docker). Collections: interviewers, interviewsessions.
+
+Client persistence: redux-persist uses localStorage (auth) + IndexedDB (interview slice via localforage) to survive refresh & offline blips.
+
+Resume files: Stored on local disk (apps/api/uploads). Filenames are randomised (timestamp + RNG). Served at /uploads/<storedName>. Future production deployment should offload to object storage (S3, GCS) and enforce signed URL access if privacy requirements increase.
+
+---
+
+## 7. Security Considerations
+
+Implemented:
+- JWT auth (7d) for interviewer routes; bearer token parsing + user existence check
+- Invite token is a UUID v4 (unguessable) – relies on entropy; no PII embedded
+- CORS origin allowlist via CLIENT_URL (comma-separated) for both REST and Socket.IO
+- Limited file types (PDF/DOC/DOCX) + size cap (8MB) enforced by Multer
+- Zod validation for all mutating candidate & interviewer inputs
+
+Not yet implemented / TODO:
+- Interview session expiration / revocation routine (status 'expired' path unused)
+- Rate limiting (login brute force, invite enumeration)
+- Audit logging for answer edits / resend attempts
+- Sanitisation for potential HTML in AI responses (currently plain text prompts keep this low risk)
+- Model output toxicity / safety filtering
+
+Configuration secrets required:
+- DATABASE_URL (Mongo connection string)
+- JWT_SECRET (signing for interviewer tokens; defaults to dev-secret if absent – DO NOT use in prod)
+- GEMINI_API_KEY (Google GenAI key)
+- CLIENT_URL (comma-separated origins, first used for invite link base)
+- Optional: SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / MAIL_FROM for email
+
+---
+
+## 8. Timing & Answer Progression
+
+Authoritative timer: server stamps currentQuestionDeadline; client-side countdown is cosmetic. Auto-submit path still performs a normal POST; backend decides next state. DurationMs is captured (bounded) for future analytics / fairness adjustments.
+
+Edge cases handled:
+- Duplicate answer submission for same question overwrites previous record
+- Missing answer (blank or timed out) still scored (AI receives empty string)
+- Starting interview twice returns current state idempotently
+
+---
+
+## 9. Deployment Notes
+
+Local dev:
+1. docker compose up -d (Mongo)
+2. Copy apps/api/.env.example → .env and fill variables
+3. npm install (root)
+4. npm run dev (runs dev:api + dev:web concurrently)
+5. (Optional) seed interviewer: npm run -w apps/api seed
+
+Production hardening checklist:
+- Replace local disk resume storage with S3/GCS bucket (signed URLs)
+- Add HTTPS termination & secure cookies if session cookies introduced
+- Add structured logging (pino / Winston) + log correlation IDs
+- Implement metrics (Prometheus or hosted) for question latency & AI error rates
+- Add circuit breaker / retries for Gemini API
+
+---
+
+## 10. Extension Points
+
+Where to add features safely:
+- Additional question strategies: extend QUESTION_PLAN or make it configurable per session (add schema fields + interviewer UI form)
+- Alternate scoring model: implement new scoreAnswerWithAi variant behind a strategy flag
+- Export formats: add /api/interviews/:id/export.[pdf|csv] endpoint consuming serializeSession(session)
+- Expiration job: cron-like process marking sessions 'expired' based on createdAt age
+
+---
+
+## 11. Known Gaps / Future Enhancements
+- Real-time channel for interviewee (currently only interviewer uses Socket.IO – candidate could subscribe for lower latency deadlines)
+- Graceful resume re-parsing (re-upload flow) with diffing
+- Accessibility audit (focus management in timed chat UI)
+- Internationalisation / locale-specific date & time formatting
+- Structured analytics dashboard (scores by difficulty, average completion time)
+
+---
+
+## 12. Glossary
+- Session: An InterviewSession document plus its in-flight runtime state
+- Plan: Ordered difficulty/time blueprint (QUESTION_PLAN)
+- Deadline: Absolute ISO timestamp when current question auto-submits
+- Transcript: Chronological chat-like record (system, assistant, candidate entries)
+
+---
+
+Document status: UPDATED {{DATE}} – amend when backend contracts or data model change.
+
